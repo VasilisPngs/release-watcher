@@ -3,8 +3,7 @@ package com.pngs.releasewatcher
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
+import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -26,7 +25,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -36,7 +34,6 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,154 +43,155 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.concurrent.Executors
-import kotlin.math.max
 
 private enum class Screen {
     Login,
     Settings
 }
 
-private data class DeviceCodeResponse(
-    val deviceCode: String,
-    val userCode: String,
-    val verificationUri: String,
-    val expiresIn: Int,
-    val interval: Int
-)
-
 class MainActivity : ComponentActivity() {
     private val executor = Executors.newSingleThreadExecutor()
-    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private var screen by mutableStateOf(Screen.Login)
+    private var message by mutableStateOf("Not signed in")
+    private var signingIn by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
-        setContent {
-            var screen by remember { mutableStateOf(Screen.Login) }
-            var message by remember { mutableStateOf("Not signed in") }
-            var userCode by remember { mutableStateOf<String?>(null) }
-            var verificationUri by remember { mutableStateOf<String?>(null) }
-            var signingIn by remember { mutableStateOf(false) }
+        handleOAuthCallback(intent)
 
+        setContent {
             ReleaseWatcherApp(
                 screen = screen,
                 message = message,
-                userCode = userCode,
-                verificationUri = verificationUri,
                 signingIn = signingIn,
                 onSettingsClick = { screen = Screen.Settings },
                 onBackClick = { screen = Screen.Login },
-                onOpenVerification = {
-                    verificationUri?.let { openUrl(it) }
-                },
-                onSignInClick = {
-                    signingIn = true
-                    message = "Requesting GitHub device code..."
-                    userCode = null
-                    verificationUri = null
-
-                    startGithubLogin(
-                        onCode = { code, uri ->
-                            userCode = code
-                            verificationUri = uri
-                            message = "Enter this code on GitHub, then approve access."
-                            openUrl(uri)
-                        },
-                        onSuccess = {
-                            signingIn = false
-                            userCode = null
-                            verificationUri = null
-                            message = "Signed in successfully."
-                        },
-                        onError = { error ->
-                            signingIn = false
-                            message = error
-                        }
-                    )
-                }
+                onSignInClick = { startGithubLogin() }
             )
         }
     }
 
-    private fun startGithubLogin(
-        onCode: (String, String) -> Unit,
-        onSuccess: () -> Unit,
-        onError: (String) -> Unit
-    ) {
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleOAuthCallback(intent)
+    }
+
+    private fun startGithubLogin() {
+        signingIn = true
+        message = "Opening GitHub..."
+
+        val verifier = randomUrlSafeString(64)
+        val state = randomUrlSafeString(32)
+        val challenge = codeChallenge(verifier)
+
+        getPreferences(MODE_PRIVATE)
+            .edit()
+            .putString("code_verifier", verifier)
+            .putString("oauth_state", state)
+            .apply()
+
+        val url = Uri.Builder()
+            .scheme("https")
+            .authority("github.com")
+            .path("/login/oauth/authorize")
+            .appendQueryParameter("client_id", GithubOAuth.CLIENT_ID)
+            .appendQueryParameter("redirect_uri", GithubOAuth.REDIRECT_URI)
+            .appendQueryParameter("state", state)
+            .appendQueryParameter("code_challenge", challenge)
+            .appendQueryParameter("code_challenge_method", "S256")
+            .build()
+            .toString()
+
+        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+    }
+
+    private fun handleOAuthCallback(intent: Intent?) {
+        val uri = intent?.data ?: return
+
+        if (uri.scheme != "com.pngs.releasewatcher") return
+        if (uri.host != "oauth") return
+        if (uri.path != "/callback") return
+
+        val error = uri.getQueryParameter("error")
+        if (error != null) {
+            signingIn = false
+            message = "GitHub login cancelled."
+            return
+        }
+
+        val code = uri.getQueryParameter("code")
+        val returnedState = uri.getQueryParameter("state")
+
+        val prefs = getPreferences(MODE_PRIVATE)
+        val savedState = prefs.getString("oauth_state", null)
+        val verifier = prefs.getString("code_verifier", null)
+
+        if (code.isNullOrBlank() || returnedState.isNullOrBlank() || verifier.isNullOrBlank()) {
+            signingIn = false
+            message = "Invalid GitHub callback."
+            return
+        }
+
+        if (returnedState != savedState) {
+            signingIn = false
+            message = "GitHub state mismatch."
+            return
+        }
+
+        signingIn = true
+        message = "Finishing GitHub sign in..."
+
         executor.execute {
             try {
-                val device = requestDeviceCode()
+                val token = exchangeCodeForToken(code, verifier)
 
-                mainHandler.post {
-                    onCode(device.userCode, device.verificationUri)
-                }
+                getPreferences(MODE_PRIVATE)
+                    .edit()
+                    .putString("access_token", token)
+                    .remove("code_verifier")
+                    .remove("oauth_state")
+                    .apply()
 
-                pollForToken(device)
-
-                mainHandler.post {
-                    onSuccess()
+                runOnUiThread {
+                    signingIn = false
+                    message = "Signed in successfully."
                 }
             } catch (error: Throwable) {
-                mainHandler.post {
-                    onError(error.message ?: "GitHub login failed.")
+                runOnUiThread {
+                    signingIn = false
+                    message = error.message ?: "GitHub login failed."
                 }
             }
         }
     }
 
-    private fun requestDeviceCode(): DeviceCodeResponse {
+    private fun exchangeCodeForToken(
+        code: String,
+        verifier: String
+    ): String {
         val json = postForm(
-            url = "https://github.com/login/device/code",
+            url = "https://github.com/login/oauth/access_token",
             form = mapOf(
-                "client_id" to GithubOAuth.CLIENT_ID
+                "client_id" to GithubOAuth.CLIENT_ID,
+                "redirect_uri" to GithubOAuth.REDIRECT_URI,
+                "code" to code,
+                "code_verifier" to verifier
             )
         )
 
-        val verificationUri = json.optString("verification_uri_complete")
-            .ifBlank { json.getString("verification_uri") }
-
-        return DeviceCodeResponse(
-            deviceCode = json.getString("device_code"),
-            userCode = json.getString("user_code"),
-            verificationUri = verificationUri,
-            expiresIn = json.optInt("expires_in", 900),
-            interval = json.optInt("interval", 5)
-        )
-    }
-
-    private fun pollForToken(device: DeviceCodeResponse) {
-        var intervalSeconds = max(device.interval, 5)
-        val deadline = System.currentTimeMillis() + device.expiresIn * 1000L
-
-        while (System.currentTimeMillis() < deadline) {
-            Thread.sleep(intervalSeconds * 1000L)
-
-            val json = postForm(
-                url = "https://github.com/login/oauth/access_token",
-                form = mapOf(
-                    "client_id" to GithubOAuth.CLIENT_ID,
-                    "device_code" to device.deviceCode,
-                    "grant_type" to "urn:ietf:params:oauth:grant-type:device_code"
-                )
-            )
-
-            val token = json.optString("access_token")
-            if (token.isNotBlank()) {
-                return
-            }
-
-            when (json.optString("error")) {
-                "authorization_pending" -> Unit
-                "slow_down" -> intervalSeconds += 5
-                "access_denied" -> throw IllegalStateException("GitHub authorization was denied.")
-                "expired_token" -> throw IllegalStateException("GitHub login code expired.")
-                else -> throw IllegalStateException(json.optString("error_description", "GitHub login failed."))
-            }
+        val token = json.optString("access_token")
+        if (token.isBlank()) {
+            throw IllegalStateException(json.optString("error_description", "GitHub token exchange failed."))
         }
 
-        throw IllegalStateException("GitHub login expired.")
+        return token
     }
 
     private fun postForm(
@@ -233,12 +231,29 @@ class MainActivity : ComponentActivity() {
         return JSONObject(response)
     }
 
-    private fun encode(value: String): String {
-        return URLEncoder.encode(value, Charsets.UTF_8.name())
+    private fun randomUrlSafeString(size: Int): String {
+        val bytes = ByteArray(size)
+        SecureRandom().nextBytes(bytes)
+
+        return Base64.encodeToString(
+            bytes,
+            Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP
+        )
     }
 
-    private fun openUrl(url: String) {
-        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+    private fun codeChallenge(verifier: String): String {
+        val bytes = MessageDigest
+            .getInstance("SHA-256")
+            .digest(verifier.toByteArray(Charsets.US_ASCII))
+
+        return Base64.encodeToString(
+            bytes,
+            Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP
+        )
+    }
+
+    private fun encode(value: String): String {
+        return URLEncoder.encode(value, Charsets.UTF_8.name())
     }
 
     override fun onDestroy() {
@@ -251,12 +266,9 @@ class MainActivity : ComponentActivity() {
 private fun ReleaseWatcherApp(
     screen: Screen,
     message: String,
-    userCode: String?,
-    verificationUri: String?,
     signingIn: Boolean,
     onSettingsClick: () -> Unit,
     onBackClick: () -> Unit,
-    onOpenVerification: () -> Unit,
     onSignInClick: () -> Unit
 ) {
     val dark = isSystemInDarkTheme()
@@ -295,11 +307,8 @@ private fun ReleaseWatcherApp(
             when (screen) {
                 Screen.Login -> LoginScreen(
                     message = message,
-                    userCode = userCode,
-                    verificationUri = verificationUri,
                     signingIn = signingIn,
                     onSettingsClick = onSettingsClick,
-                    onOpenVerification = onOpenVerification,
                     onSignInClick = onSignInClick
                 )
 
@@ -314,11 +323,8 @@ private fun ReleaseWatcherApp(
 @Composable
 private fun LoginScreen(
     message: String,
-    userCode: String?,
-    verificationUri: String?,
     signingIn: Boolean,
     onSettingsClick: () -> Unit,
-    onOpenVerification: () -> Unit,
     onSignInClick: () -> Unit
 ) {
     Scaffold(
@@ -373,7 +379,7 @@ private fun LoginScreen(
                         enabled = !signingIn,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(if (signingIn) "Waiting for GitHub..." else "Sign in with GitHub")
+                        Text(if (signingIn) "Signing in..." else "Sign in with GitHub")
                     }
 
                     Text(
@@ -381,40 +387,6 @@ private fun LoginScreen(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
                     )
-
-                    if (userCode != null && verificationUri != null) {
-                        Card(
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surface
-                            )
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Text(
-                                    text = userCode,
-                                    style = MaterialTheme.typography.headlineMedium,
-                                    fontWeight = FontWeight.Bold
-                                )
-
-                                Text(
-                                    text = "Enter this code on GitHub to finish signing in.",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
-                                )
-
-                                OutlinedButton(
-                                    onClick = onOpenVerification,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text("Open GitHub")
-                                }
-                            }
-                        }
-                    }
 
                     Text(
                         text = "Read-only access. No write actions. No private repositories by default.",
@@ -515,6 +487,7 @@ private fun SettingRow(
 
 private object GithubOAuth {
     const val CLIENT_ID = "Ov23liAh9Q6Ihf7Tgen8"
+    const val REDIRECT_URI = "com.pngs.releasewatcher://oauth/callback"
 }
 
 private object GithubLight {
