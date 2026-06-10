@@ -7,17 +7,22 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -25,8 +30,19 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+
+private enum class Screen {
+    Login,
+    Settings
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -42,6 +58,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun ReleaseWatcherApp() {
     val dark = isSystemInDarkTheme()
+    var screen by remember { mutableStateOf(Screen.Login) }
 
     val colors = if (dark) {
         darkColorScheme(
@@ -74,13 +91,25 @@ private fun ReleaseWatcherApp() {
                 .background(MaterialTheme.colorScheme.background),
             color = MaterialTheme.colorScheme.background
         ) {
-            HomeScreen()
+            when (screen) {
+                Screen.Login -> LoginScreen(
+                    onSettingsClick = { screen = Screen.Settings },
+                    onSignInClick = {}
+                )
+
+                Screen.Settings -> SettingsScreen(
+                    onBackClick = { screen = Screen.Login }
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun HomeScreen() {
+private fun LoginScreen(
+    onSettingsClick: () -> Unit,
+    onSignInClick: () -> Unit
+) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets(0.dp)
@@ -90,22 +119,95 @@ private fun HomeScreen() {
                 .fillMaxSize()
                 .padding(padding)
                 .windowInsetsPadding(WindowInsets.safeDrawing)
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(horizontal = 24.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
-            Text(
-                text = "Release Watcher",
-                style = MaterialTheme.typography.headlineMedium
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Release Watcher",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
 
-            Text(
-                text = "Track releases from your starred GitHub repositories.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
-            )
+                Spacer(modifier = Modifier.weight(1f))
 
-            Button(onClick = {}) {
-                Text("Sign in with GitHub")
+                IconButton(onClick = onSettingsClick) {
+                    Text(
+                        text = "⚙",
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier.weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(20.dp),
+                    horizontalAlignment = Alignment.Start
+                ) {
+                    Text(
+                        text = "Track releases from your starred GitHub repositories.",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.86f)
+                    )
+
+                    Button(
+                        onClick = onSignInClick,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Sign in with GitHub")
+                    }
+
+                    Text(
+                        text = "Read-only access. No write actions. No private repositories by default.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsScreen(
+    onBackClick: () -> Unit
+) {
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets(0.dp)
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .padding(horizontal = 20.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBackClick) {
+                    Text(
+                        text = "‹",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                Text(
+                    text = "Settings",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
             }
 
             Card(
@@ -114,29 +216,44 @@ private fun HomeScreen() {
                 )
             ) {
                 Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp)
                 ) {
-                    Text("Release filters", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = "Release filters",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
                     SettingRow("Stable releases", true)
                     SettingRow("Prereleases", false)
                     SettingRow("Beta releases", false)
                     SettingRow("Alpha releases", false)
                     SettingRow("Dev / Nightly releases", false)
+                    SettingRow("Release candidates", false)
                 }
-            }
-
-            OutlinedButton(onClick = {}) {
-                Text("Build preview")
             }
         }
     }
 }
 
 @Composable
-private fun SettingRow(title: String, checked: Boolean) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(title, style = MaterialTheme.typography.bodyLarge)
+private fun SettingRow(
+    title: String,
+    checked: Boolean
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyLarge
+        )
+
         Switch(
             checked = checked,
             onCheckedChange = {}
