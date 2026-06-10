@@ -1,4 +1,4 @@
-name: Build Debug APK
+name: Build Public APK
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -30,8 +30,17 @@ jobs:
       - name: Build debug APK
         run: gradle :app:assembleDebug --no-daemon
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-watcher-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+      - name: Prepare APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/release-watcher-debug.apk
+
+      - name: Create public GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: debug-${{ github.run_number }}
+        run: |
+          gh release create "$TAG" dist/release-watcher-debug.apk \
+            --target "$GITHUB_SHA" \
+            --title "Release Watcher Debug ${{ github.run_number }}" \
+            --notes "Debug APK for manual Android sideload."
